@@ -1,0 +1,350 @@
+---
+title: "Maheshwari_Hardik_5_2"
+author: "Hardik"
+date: "October 21, 2018"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+install.packages("knitr")
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## R Markdown
+
+```{r results='hide', echo = FALSE, message=FALSE, warning=FALSE}
+install.packages('latticeExtra')
+install.packages('data.table')
+install.packages('dplyr')
+install.packages('ggplot2')
+install.packages('gridExtra')
+install.packages('purrr')
+install.packages('tidyr')
+install.packages('sas7bdat')
+install.packages('grid')
+install.packages('gtable')
+install.packages('haven')
+install.packages('lubridate')
+install.packages('rootSolve')
+library(data.table, quietly = TRUE)
+library(dplyr, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(gridExtra, quietly = TRUE)
+library(purrr, quietly = TRUE)
+library(tidyr, quietly = TRUE)
+library(latticeExtra, quietly = TRUE)
+library(grid, quietly = TRUE)
+library(gtable, quietly = TRUE)
+library(sas7bdat, quietly = TRUE)
+library(haven, quietly = TRUE)
+library(lubridate, quietly = TRUE)
+library(rootSolve, quietly = TRUE)
+```
+
+
+## creating dataset  CRSP
+
+```{r results='hide', message=FALSE, echo=FALSE, warning=FALSE}
+setwd("P:/MFI/assignment5/5.2")
+dfCRSP <- setDT(read_sas("Q:/Data-ReadOnly/CRSP/dsf.sas7bdat", cols_only = c('CUSIP','DATE','PRC','SHROUT','PRC','RET')))
+#dfCRSP <- dfCRSP[1:100000] #comment this bit
+dfCRSP$SHROUT <- dfCRSP$SHROUT * 1000
+dfCRSP$YEAR <- year(dfCRSP$DATE)
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+dfCRSP$MARKETCAP <- abs(dfCRSP$PRC) * dfCRSP$SHROUT
+dfCRSP_Year  <- dfCRSP%>% group_by(CUSIP, YEAR) %>% summarise(annret = exp(sum(log(1+RET))), sigmae = sd(RET) * sqrt(250), MARKETCAP = first(MARKETCAP))
+dfCRSP_Year <- dfCRSP_Year %>% group_by(CUSIP) %>% mutate(annretLag = dplyr::lag(annret, n = 1, default = NA))
+dfCRSP_Year <- dfCRSP_Year %>% group_by(CUSIP) %>% mutate(sdLag = dplyr::lag(sigmae, n = 1, default = NA))
+dfCRSP_Year <- dfCRSP_Year[complete.cases(dfCRSP_Year),]
+dfCRSP_Year <- dfCRSP_Year[,c('CUSIP','YEAR','annretLag', 'sdLag', 'MARKETCAP')]
+dfCRSP_Year <- dfCRSP_Year %>% rename(ANNRET = annretLag,SIGMAE = sdLag)
+
+```
+
+## creating funda dataset 
+```{r results='hide', echo=FALSE, message=FALSE, warning=FALSE}
+dfFunda <- setDT(read_sas("Q:/Data-ReadOnly/COMP/funda.sas7bdat", cols_only = c('CUSIP','INDFMT','DATAFMT','POPSRC','FIC','CONSOL','FYEAR', 'DLC', 'DLTT')))
+dfFunda <- subset(dfFunda, (INDFMT=='INDL'& DATAFMT=='STD' & POPSRC=='D' & FIC=='USA' & CONSOL=='C' & FYEAR >=1970 & FYEAR <= 2017))
+#dfFunda <- dfFunda[1:100000] #comment this bit
+dfFunda$CUSIP <- substr(dfFunda$CUSIP , 1, 8)
+dfFunda$YEAR <- dfFunda$FYEAR
+dfFunda[is.na(dfFunda)] <- 0
+dfFunda$DLC <- dfFunda$DLC * 1000000
+dfFunda$DLTT <-  dfFunda$DLTT * 1000000
+dfFunda$FVD <- dfFunda$DLC + 0.5 * dfFunda$DLTT
+dfFunda <- dfFunda[,c('CUSIP','YEAR','FVD')]
+dfFunda <- dfFunda %>% group_by(CUSIP) %>% mutate(FVDLAG = dplyr::lag(FVD, n = 1, default = NA))
+dfFunda <- dfFunda[complete.cases(dfFunda),]
+dfFunda <- dfFunda[,c('CUSIP','YEAR','FVDLAG')]
+dfFunda <- dfFunda %>% rename(FVD = FVDLAG)
+```
+##merging the two dataset
+```{r results='hide', message=FALSE, warning=FALSE}
+dfFunda <- filter(dfFunda, FVD > 0)
+dfDDNaive <- merge(dfCRSP_Year, dfFunda, by = c('CUSIP','YEAR'))
+dfDDNaive[order(dfDDNaive$YEAR), ]
+#Approach 1 -> 0.05 + 0.25 * sigma 
+dfDDNaive$sigNaive1= (dfDDNaive$MARKETCAP/(dfDDNaive$MARKETCAP+dfDDNaive$FVD)) * dfDDNaive$SIGMAE  + (dfDDNaive$FVD/(dfDDNaive$MARKETCAP+dfDDNaive$FVD)) * (dfDDNaive$SIGMAE * 0.25 + 0.05)
+dfDDNaive$distDefault1 = (log((dfDDNaive$MARKETCAP+dfDDNaive$FVD)/dfDDNaive$FVD) + (dfDDNaive$ANNRET - 0.5 * dfDDNaive$sigNaive1* dfDDNaive$sigNaive1) )/(dfDDNaive$sigNaive1)
+
+
+dfDDNaive <- dfDDNaive[complete.cases(dfDDNaive),]
+dfDDNaive$pdef1 <- pnorm(-dfDDNaive$distDefault1)
+```
+
+## rate dataset
+```{r}
+rate <- read.csv("DAILYFED.csv")
+rate$DATE <- as.Date(rate$DATE, "%Y-%m-%d")
+rate <- data.table(rate)
+rate$DTB3Cont <- log(1 +as.numeric(as.character(rate$DTB3)) * 0.01)
+rate[,YEAR := year(DATE)]
+rate <- rate[complete.cases(rate),]
+rate  <- rate %>% group_by(YEAR) %>% summarise(r= first(DTB3Cont))
+```
+#merge finalframe with rate
+```{r}
+dfDDNaive <- merge(dfDDNaive, rate, by = c('YEAR'))
+dfDDNaive[order(dfDDNaive$YEAR), ]
+
+```
+#root solve direct approach for calculating v and sigmav
+```{r}
+
+calModel <- function(x) {
+F1 = E - x[1]*pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2] ) + F*exp(-r)*pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2]-x[2])
+F2 = sigmaE - x[1]/E * pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2])* x[2]
+c(F1 = F1, F2 = F2)
+}
+
+rootFrame <- select(dfDDNaive,YEAR,CUSIP)
+rootFrame$ValueF<- rep(-1,length=nrow(rootFrame))
+rootFrame$sigmaVal<- rep(-1,length=nrow(rootFrame))
+
+
+for (i in (1:nrow(dfDDNaive)) ){
+    E = dfDDNaive$MARKETCAP[i]
+    F = dfDDNaive$FVD[i]
+    r = dfDDNaive$r[i]
+    sigmaE = dfDDNaive$SIGMAE[i]
+    solution <- multiroot(f = calModel, start = c(dfDDNaive$MARKETCAP[i]+dfDDNaive$FVD[i],dfDDNaive$MARKETCAP[i]*dfDDNaive$sigNaive1[i]/(dfDDNaive$MARKETCAP[i]+dfDDNaive$FVD[i])))
+    rootFrame$ValueF[i] = solution$root[1]
+    rootFrame$sigmaVal[i] = solution$root[2]
+}
+
+dfDDNaive$distDefDirect <- ( log(rootFrame$ValueF/dfDDNaive$FVD) + (dfDDNaive$ANNRET-rootFrame$sigmaVal**2/2)) / (rootFrame$sigmaVal)
+dfDDNaive$pdefDirect <- pnorm(-dfDDNaive$distDefDirect)
+
+
+```
+# Printing descriptive stats
+```{r fig, fig.height = 15, fig.width = 15, out.width = '40%',  fig.align = "center"}
+dfDDNaive <- dfDDNaive[complete.cases(dfDDNaive),]
+dfDDNaive <- filter(dfDDNaive, distDefDirect < 1000)
+dfDDNaive <- filter(dfDDNaive, distDefDirect > 0)
+ddpdFinal <- dfDDNaive[,c('distDefDirect','pdefDirect')]
+#part1 <- dfDDNaive[,c('distDefault1','pdef1','distDefault2','pdef2', 'distDefault3', 'pdef3')]
+
+pdf("desc_stats.pdf", width = 20, height = 30)
+  plot.new()
+  string <- "Descriptive Stats"
+  title(string, cex.main=2)
+  tmp <- do.call(data.frame, 
+                 list(count = apply(ddpdFinal, 2, length),
+                      mean = apply(ddpdFinal, 2, mean),
+                      Q_25 = apply(ddpdFinal, 2, quantile, probs = c(0.25)),
+                      Q_50 = apply(ddpdFinal, 2, quantile, probs = c(0.50)),
+                      Q_75 = apply(ddpdFinal, 2, quantile, probs = c(0.75)),
+                      sd = apply(ddpdFinal, 2, sd)
+                 ))
+  grid.table(tmp)
+dev.off()  
+#rm(part1)
+#rm(tmp)
+#rm(string)
+```
+#computing correlation
+```{r , results='asis', message=FALSE, warning=FALSE}
+pdf("correlation.pdf", width = 20, height = 30)
+plot.new()
+  string <- "Correlation using Direct Approach Method"
+  title(string, cex.main=2)
+corrApproach1 <- cor(dfDDNaive$distDefDirect, dfDDNaive$pdefDirect)
+grid.table(corrApproach1)
+dev.off() 
+```
+
+#Plot for means
+```{r}
+pdf("plotsmean.pdf", width = 20, height = 30)
+fmean <- function(df, columnVar, headerLeft) {
+  df[ c( columnVar ,  "YEAR" )  ]  %>% group_by(YEAR) %>% summarise_(valueCol = paste( "mean(" ,  as.name(columnVar), ")"  ) ) %>%  ggplot(aes(x = YEAR, y = valueCol)) + geom_line() + labs(y = headerLeft) + ggtitle("Mean Plot")
+}
+namVar <- c('mean_DD_DirectApproach', 'mean_PD_DirectApproach')
+            
+items <- c("distDefDirect","pdefDirect")
+K <- 1
+for(i in 1:length(items)){
+    plot(fmean(dfDDNaive, items[[i]], namVar[[K]]))
+    K <- K + 1
+}
+dev.off()
+```
+
+
+
+
+
+#plot for quantiles
+```{r}
+pdf("quantiles.pdf", width = 20, height = 30)
+fQuant <- function(df, probQuant, columnVar, headerLeft) {
+  df[ c( columnVar ,  "YEAR" )  ]  %>% group_by(YEAR) %>% summarise_(valueCol = paste( "quantile(" ,  as.name(columnVar), ",probs=",probQuant ,")"  ) ) %>%  ggplot(aes(x = YEAR, y = valueCol)) + geom_line() + labs(y = headerLeft) + ggtitle("Quantile Plot")
+}
+setorder(dfDDNaive, 'YEAR')
+#df <- dfDDNaive[,:= mean(distDefault1), by = c('YEAR')]
+namVar <- c('Q_25_DD_DirectApproach', 'Q_50_DirectApproach', 'Q_75_DirectApproach',
+            'Q_25_PD_DirectApproach', 'Q_50_PD_DirectApproach', 'Q_75_PD_DirectApproach')
+
+items <- c("distDefDirect","pdefDirect")
+quant <- c(0.25, 0.5, 0.75)
+K <- 1
+for(i in 1:length(items)){
+  for(j in 1:length(quant)){
+    plot(fQuant(dfDDNaive, quant[[j]], items[[i]], namVar[[K]]))
+    K <- K + 1
+  }
+}
+
+dev.off()
+```
+
+#NBER Recession Data Frame Generation
+```{r}
+
+usrec <- read.csv("USREC.csv")
+usrec$DATE <- as.Date(usrec$DATE, "%Y-%m-%d")
+usrec <- data.table(usrec)
+usrec[,YEAR := year(DATE)]
+usrec[,month := month(DATE)]
+usrec <- usrec[YEAR %in% unique(YEAR) & month == 12]
+usrec <- usrec[,c('YEAR','USREC')]
+usrec <- unique(usrec)
+dfForRecession <- dfDDNaive[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfForRecFinal <- aggregate(dfForRecession[, 1:3], list(dfForRecession$YEAR), mean)
+dfForRecFinal <- dfForRecFinal[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfRecMerged <- merge(dfForRecFinal, usrec, by = c('YEAR'))
+```
+#NBER Recession Data Descriptive Stats
+```{r fig, fig.height = 15, fig.width = 20, out.width = '40%',  fig.align = "center"}
+pdf("nber_descstats.pdf", width = 20, height = 30)
+NB <- unique(dfRecMerged$USREC)
+for (i in NB){
+  plot.new()
+  string <- paste ("Descriptive Stats for USREC Value", i)
+  title(string, cex.main=2)
+  smallF <- subset(dfRecMerged, dfRecMerged$USREC == i)
+  smallF <- smallF[, 2:3] 
+  tmp <- do.call(data.frame, list(mean = apply(smallF, 2, mean),
+                                  sd = apply(smallF, 2, sd),
+                                  median = apply(smallF, 2, median),
+                                  min = apply(smallF, 2, min),
+                                  max = apply(smallF, 2, max),
+                                  count = apply(smallF, 2, length),
+                                  Q_25 = apply(smallF, 2, quantile, probs = c(0.25)),
+                                  Q_50 = apply(smallF, 2, quantile, probs = c(0.50)),
+                                  Q_75 = apply(smallF, 2, quantile, probs = c(0.75))
+                                  )
+                 )
+ grid.table(tmp)
+}
+dev.off()
+```
+#NBER Recession Plot
+```{R}
+pdf("nberRecessionPlots.pdf", width = 20, height = 30)
+NB <- unique(dfRecMerged$USREC)
+for (i in NB){
+  smallF <- subset(dfRecMerged, dfRecMerged$USREC == i)
+  smallF <- smallF[, 1:3]
+  cols <- colnames(smallF)
+  cols <- cols[2:3]
+  for (j in cols){
+    plot_graph <- smallF[,c('YEAR',j)]
+    plot(ggplot(plot_graph, aes_string(y = plot_graph[,c(2)], x = plot_graph[,c(1)]))+geom_line()+labs(x = "Date", y = colnames(plot_graph)[2])+ ggtitle(paste("USREC Value", i, " Plot for", colnames(plot_graph)[2])))
+  }
+}
+dev.off()
+```
+#Moody's BAA-Fed Fund Spread
+```{r}
+moodyFrame <- read.csv("BAAFFM.csv")
+moodyFrame$DATE <- as.Date(moodyFrame$DATE, "%Y-%m-%d")
+moodyFrame <- data.table(moodyFrame)
+moodyFrame$YEAR <- year(moodyFrame$DATE)
+moodyFrame[,baa_avg := mean(BAAFFM), by = c('YEAR')]
+moodyFrame <- moodyFrame[,c('YEAR','baa_avg')]
+moodyFrame<- unique(moodyFrame)
+
+dfForBAAFM <- dfDDNaive[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfForBAAFM <- aggregate(dfForBAAFM[, 1:3], list(dfForBAAFM$YEAR), mean)
+dfForBAAFM <- dfForBAAFM[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfRecMergBAAFM <- merge(dfForBAAFM, moodyFrame, by = c('YEAR'))
+
+pdf("moody.pdf", width = 20, height = 30)
+cols <- colnames(dfRecMergBAAFM)
+cols <- cols[2:3]
+for (j in cols){
+    plot_graph <- dfRecMergBAAFM[,c('YEAR',j, 'baa_avg')]
+    plotname <-  paste("plot for", colnames(plot_graph)[3], "(Blue) vs", colnames(plot_graph)[2], " (Red)")
+    p <- ggplot() +
+      # blue plot
+      geom_smooth(data=plot_graph, aes(x=plot_graph[,c(1)], y=plot_graph[,c(3)]), fill="blue",
+        colour="darkblue", size=1) +
+      # red plot
+      geom_smooth(data=plot_graph, aes(x=plot_graph[,c(1)], y=plot_graph[,c(2)]), fill="red",
+        colour="red", size=1) +
+      labs(title=plotname, y="Values", x="Year")
+    plot(p)
+  }                                                                                                     
+
+dev.off()
+```
+#Cleveland Stress Index
+```{r}
+CFSIndex <- read.csv("CFSI.csv")
+CFSIndex <- data.table(CFSIndex)
+CFSIndex$DATE <- as.Date(CFSIndex$DATE, "%Y-%m-%d")
+CFSIndex[,YEAR := year(DATE)]
+CFSIndex[,CFSIndex_avg := mean(CFSI), by = c('YEAR')]
+CFSIndex <- CFSIndex[,c('YEAR','CFSIndex_avg')]
+CFSIndex <- unique(CFSIndex)
+
+dfForCSI <- dfDDNaive[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfForCSI <- aggregate(dfForCSI[, 1:3], list(dfForCSI$YEAR), mean)
+dfForCSI <- dfForCSI[,c('YEAR', 'distDefDirect','pdefDirect')]
+dfRecMergCFSI <- merge(dfForCSI, CFSIndex, by = c('YEAR'))
+
+cols <- colnames(dfRecMergCFSI)
+cols <- cols[2:3]
+pdf("csi.pdf", width = 20, height = 30)
+for (j in cols){
+    plot_graph <- dfRecMergCFSI[,c('YEAR',j, 'CFSIndex_avg')]
+    plotname <-  paste("plot for", colnames(plot_graph)[3], "(Blue) vs", colnames(plot_graph)[2], " (Red)")
+    p <- ggplot() +
+      # blue plot
+      geom_smooth(data=plot_graph, aes(x=plot_graph[,c(1)], y=plot_graph[,c(3)]), fill="blue",
+        colour="darkblue", size=1) +
+      # red plot
+      geom_smooth(data=plot_graph, aes(x=plot_graph[,c(1)], y=plot_graph[,c(2)]), fill="red",
+        colour="red", size=1) +
+      labs(title=plotname, y="Values", x="Year")
+    plot(p)
+}
+
+dev.off()
+```
+
+
