@@ -1,0 +1,222 @@
+---
+title: "RiskMgmt_hw7_Hardik"
+author: "Hardik"
+date: "November 25, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+install.packages("knitr")
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r results='hide', echo = FALSE, message=FALSE, warning=FALSE}
+install.packages('latticeExtra')
+install.packages('data.table')
+install.packages('dplyr')
+install.packages('ggplot2')
+install.packages('gridExtra')
+install.packages('purrr')
+install.packages('tidyr')
+install.packages('sas7bdat')
+install.packages('grid')
+install.packages('gtable')
+install.packages('haven')
+install.packages('lubridate')
+install.packages('fGarch')
+library(data.table, quietly = TRUE)
+library(dplyr, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(gridExtra, quietly = TRUE)
+library(purrr, quietly = TRUE)
+library(tidyr, quietly = TRUE)
+library(latticeExtra, quietly = TRUE)
+library(grid, quietly = TRUE)
+library(gtable, quietly = TRUE)
+library(sas7bdat, quietly = TRUE)
+library(haven, quietly = TRUE)
+library(lubridate, quietly = TRUE)
+library(fGarch)
+```
+
+```{r }
+#Random Number Generator and preparing dataset
+setwd("P:/MFI/assignment7")
+set.seed(903216069)
+yearStart <- as.integer(runif(1, min=1980, max=2010))
+yearEnd <-  yearStart + 6 
+uniquePerm <- setDT(read_sas("Q:/Data-ReadOnly/CRSP/dsf.sas7bdat", cols_only = c('PERMNO','DATE', 'RET')))
+uniquePerm$YEAR <- year(uniquePerm$DATE)
+permNum <- subset(uniquePerm, uniquePerm$YEAR == yearStart)
+permNum <- unique(permNum$PERMNO)
+
+
+set.seed(903216069)
+permNum <- sample(permNum, 100)
+#uniquePerm <- uniquePerm %>% filter(uniquePerm$PERMNO %in% permNum)
+smallF <- subset(uniquePerm, PERMNO %in% permNum)
+uniquePerm <- smallF
+#uniquePerm <- filter(uniquePerm, uniquePerm$PERMNO %in% permNum)
+
+part2 <- subset(uniquePerm, uniquePerm$YEAR>=2000 & uniquePerm$YEAR<=2010)
+part2 <- part2[complete.cases(part2),]
+uniquePerm <- subset(uniquePerm, uniquePerm$YEAR>=yearStart & uniquePerm$YEAR<=yearEnd)
+uniquePerm <- uniquePerm[complete.cases(uniquePerm),]
+
+```
+
+```{r}
+invested <- 1000000
+portfolio<-aggregate(uniquePerm$RET, by  = list(uniquePerm$DATE) , mean)  #create porftolio -> sum per date
+names(portfolio)[1] <- "Date" 
+names(portfolio)[2] <- "RET"
+summary(portfolio$RET*100)
+
+portInitialPosition <- invested * 100
+
+pdf("varPlots.pdf", width = 20, height = 30)
+#var percentage and the dollar amount
+confidence <- 0.95
+hist(portfolio$RET, breaks=100, main="Time Period 1980-1986")
+var <- as.numeric ( abs(quantile(portfolio$RET,1-confidence)) )
+print(paste0("VAR = ", var * 100, " %"))
+dollarVar <- var * portInitialPosition
+print(paste0("$VAR = $ ", dollarVar))
+
+#expected shortfall
+shortfall <- abs ( mean(portfolio$RET [which (portfolio$RET<(-var))]) )
+print(paste0("Expected short fall = ",shortfall*100, " %"))
+dollarShortfall <-  shortfall * portInitialPosition
+print(paste0("$Shortfall = $ ", dollarShortfall))
+
+
+portfolioSecond<-aggregate(part2$RET, by  = list(part2$DATE) , mean)  #create porftolio -> sum per date
+names(portfolioSecond)[1] <- "Date" 
+names(portfolioSecond)[2] <- "RET"
+summary(portfolioSecond$RET*100)
+
+
+#var percentage and the dollar amount
+confidence <- 0.95
+hist(portfolioSecond$RET, breaks=100,  main="Time Period 2000-2010")
+var <- as.numeric ( abs(quantile(portfolioSecond$RET,1-confidence)) )
+print(paste0("VAR 2000-2010 = ", var * 100, " %"))
+dollarVar <- var * portInitialPosition
+print(paste0("$VAR 2000-2010 = $ ", dollarVar))
+
+#expected shortfall
+shortfall <- abs ( mean(portfolioSecond$RET [which (portfolioSecond$RET<(-var))]) )
+print(paste0("Expected short fall 2000-2010 = ",shortfall*100, " %"))
+dollarShortfall <-  shortfall * portInitialPosition
+print(paste0("$Shortfall 2000-2010 = $ ", dollarShortfall))
+dev.off()
+```
+#RiskMetrics Model - JPM
+```{r}
+
+JPMriskMetrics <- data.frame("Date" = portfolio$Date, "RET" = portfolio$RET, "variance" = 0)
+JPMriskMetricsOutSample <- data.frame("Date" = portfolioSecond$Date, "RET" = portfolioSecond$RET, "variance" = 0)
+#first variance is the historical variance of the portfolio
+JPMriskMetrics$variance[1] <- var(portfolio$RET) * 250
+JPMriskMetricsOutSample$variance[1] <- var(portfolio$RET) * 250
+
+lambda <- 0.94
+i <- 2
+while(i <= nrow(JPMriskMetrics))
+{
+  JPMriskMetrics$variance[i] <- lambda*JPMriskMetrics$variance[i-1]+(1-lambda)*(JPMriskMetrics$RET[i-1]^2 )
+  i = i + 1
+}
+JPMriskMetrics$variance <- JPMriskMetrics$variance
+
+pdf("timeSeriesPortfolioInsample.pdf", width = 20, height = 30)
+#plot for the time series plot of the portfolio
+plot( JPMriskMetrics$Date, JPMriskMetrics$variance,type = "l", col="blue", lwd = 0.5 , 
+      xlab = "Years", ylab = "annualized variance Portfolio",  main = "RiskMetrics model 1980-1986")
+dev.off()  
+
+lambda <- 0.94
+i <- 2
+while(i <= nrow(JPMriskMetricsOutSample))
+{
+  JPMriskMetricsOutSample$variance[i] <- lambda*JPMriskMetricsOutSample$variance[i-1]+(1-lambda)*(JPMriskMetricsOutSample$RET[i-1]^2 )
+  i = i + 1
+}
+JPMriskMetricsOutSample$variance <- JPMriskMetricsOutSample$variance 
+
+pdf("timeSeriesPortfolioOutsample.pdf", width = 20, height = 30)
+#plot for the time series plot of the portfolio
+plot( JPMriskMetricsOutSample$Date, JPMriskMetricsOutSample$variance,type = "l", col="blue", lwd = 0.5 , 
+      xlab = "Years", ylab = "annualized variance Portfolio",  main = "RiskMetrics model 2010-2016")
+dev.off() 
+
+
+
+
+historicalVol  <- uniquePerm%>% group_by(PERMNO) %>% summarise(vol = sd(RET) * sqrt(250))
+part2 <- merge(part2, historicalVol, by = c('PERMNO'))
+
+addHistVol <- function(.data) {
+  lambda <- 0.94
+  i <- 2
+  while(i <= nrow(.data))
+  {
+    .data$vol[i] <- lambda* .data$vol[i-1]+(1-lambda)*(.data$RET[i-1]^2 )
+    i = i + 1
+  }
+  return(.data)
+}
+#running JPM risk metric firm wise
+part2 <- part2 %>% group_by(PERMNO) %>% addHistVol()
+#part2$vol <- part2$vol * 100
+
+
+pdf("timeSeriesFirmWise.pdf", width = 20, height = 30)
+plot.new()
+permNum <- unique(part2$PERMNO)
+for (i in permNum){
+   temp <- subset(part2, part2$PERMNO == i)
+   temp <- temp[order(temp$DATE),] 
+   #plot for  the time series plot of the firms
+   titleString <- paste("RiskMetrics model :", i)
+    plot( temp$DATE, temp$vol,type = "l", col="blue", lwd = 0.5 , 
+      xlab = "Years", ylab = "annualized variance Firm",  main =titleString)
+}
+dev.off()  
+
+
+```
+
+#garch model on the portfolio
+```{r}
+#creating time series
+RET<-ts(uniquePerm$RET, start = min(c(uniquePerm$DATE)), end = max(c(uniquePerm$DATE)) )
+
+#running garch model
+g = garchFit(~garch(1,1), RET)  
+mu = as.numeric (coef(g)[1] )
+omega = as.numeric ( coef(g)[2] )
+alpha= as.numeric ( coef(g)[3] )
+beta = as.numeric ( coef(g)[4])
+
+print(paste0("Portfolio Garch Mu: ", mu))
+print(paste0("Portfolio Garch Omega:", omega))
+print(paste0("Portfolio Garch Alpha:", alpha))
+print(paste0("Portfolio Garch Beta:", beta))
+
+JPMriskMetricsOutSample$volGarch[1] <- var(portfolio$RET) *250
+i <- 2
+#applying risk model to get yearly variance
+while(i <= nrow(JPMriskMetricsOutSample))
+{
+  JPMriskMetricsOutSample$volGarch[i] <- omega + beta * JPMriskMetricsOutSample$volGarch[i-1]+ alpha*(JPMriskMetricsOutSample$RET[i-1]^2 )
+  i = i + 1
+}
+
+pdf("garch.pdf", width = 20, height = 30)
+plot( JPMriskMetricsOutSample$Date, JPMriskMetricsOutSample$volGarch,type = "l", col="blue", lwd = 0.5 , 
+      xlab = "Years", ylab = "annualized variance Portfolio",  main = "GARCH model 2010-2016")
+dev.off() 
+
+```

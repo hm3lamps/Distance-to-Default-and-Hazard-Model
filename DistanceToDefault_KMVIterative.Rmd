@@ -1,0 +1,343 @@
+
+```{r setup, include=FALSE}
+install.packages("knitr")
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r results='hide', echo = FALSE, message=FALSE, warning=FALSE}
+install.packages('latticeExtra')
+install.packages('data.table')
+install.packages('dplyr')
+install.packages('ggplot2')
+install.packages('gridExtra')
+install.packages('purrr')
+install.packages('tidyr')
+install.packages('sas7bdat')
+install.packages('grid')
+install.packages('gtable')
+install.packages('haven')
+install.packages('lubridate')
+install.packages('rootSolve')
+install.packages('zoo')
+
+library(data.table, quietly = TRUE)
+library(dplyr, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(gridExtra, quietly = TRUE)
+library(purrr, quietly = TRUE)
+library(tidyr, quietly = TRUE)
+library(latticeExtra, quietly = TRUE)
+library(grid, quietly = TRUE)
+library(gtable, quietly = TRUE)
+library(sas7bdat, quietly = TRUE)
+library(haven, quietly = TRUE)
+library(lubridate, quietly = TRUE)
+library(rootSolve, quietly = TRUE)
+library(zoo)
+
+```
+
+
+## creating dataset  CRSP
+
+```{r results='hide', message=FALSE, echo=FALSE, warning=FALSE}
+setwd("P:/MFI/assignment5/5.3")
+dfCRSP <- setDT(read_sas("Q:/Data-ReadOnly/CRSP/dsf.sas7bdat", cols_only = c('CUSIP','DATE','PRC','SHROUT','RET')))
+#dfCRSP <- dfCRSP[1:100000] #comment this bit
+dfCRSP$SHROUT <- dfCRSP$SHROUT * 1000
+dfCRSP$YEAR <- year(dfCRSP$DATE)
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+dfCRSP$MARKETCAP <- abs(dfCRSP$PRC) * dfCRSP$SHROUT
+dfANNRET  <- dfCRSP%>% group_by(CUSIP, YEAR) %>% summarise(annret = exp(sum(log(1+RET))))
+dfSTDDev  <- dfCRSP%>% group_by(CUSIP, YEAR) %>% summarise(sigmae = sd(RET) * sqrt(250))
+dfCRSP <- merge(dfCRSP, dfANNRET, by = c('YEAR', 'CUSIP'))
+dfCRSP <- merge(dfCRSP, dfSTDDev, by = c('YEAR', 'CUSIP'))
+dfCRSP <- filter(dfCRSP, MARKETCAP > 0)
+dfCRSP <- dfCRSP[,c('CUSIP', 'DATE','YEAR','annret', 'sigmae', 'MARKETCAP')]
+dfCRSP <- dfCRSP %>% rename(ANNRET = annret,SIGMAE = sigmae)
+rm(dfANNRET,dfSTDDev)
+
+setorder(dfCRSP, "CUSIP","DATE")
+
+
+dfFunda <- setDT(read_sas("Q:/Data-ReadOnly/COMP/funda.sas7bdat", cols_only = c('CUSIP','DATADATE','INDFMT','DATAFMT','POPSRC','FIC','CONSOL','FYEAR', 'DLC', 'DLTT')))
+dfFunda <- subset(dfFunda, (INDFMT=='INDL'& DATAFMT=='STD' & POPSRC=='D' & FIC=='USA' & CONSOL=='C' & FYEAR >=1970 & FYEAR <= 2017))
+#dfFunda <- dfFunda[1:100000] #comment this bit
+dfFunda$CUSIP <- substr(dfFunda$CUSIP , 1, 8)
+dfFunda$YEAR <- dfFunda$FYEAR
+dfFunda[is.na(dfFunda)] <- 0
+dfFunda$DLC <- dfFunda$DLC * 1000000
+dfFunda$DLTT <-  dfFunda$DLTT * 1000000
+dfFunda$FVD <- dfFunda$DLC + 0.5 * dfFunda$DLTT
+dfFunda <- dfFunda[,c('CUSIP','YEAR','FVD')]
+dfFunda <- filter(dfFunda, FVD > 0)
+#dfFunda  <- dfFunda %>% group_by(CUSIP, YEAR) %>% summarise(FVD= first(FVD))
+dfFunda<- dfFunda %>% group_by(.dots = c("CUSIP", "YEAR"))%>% summarize(FVD =first(FVD))
+setorder(dfFunda, "CUSIP","YEAR")
+#dfCRSP <- dfCRSP[order(dfCRSP$DATE, dfCRSP$CUSIP),]
+#dfFunda <- dfFunda[order(dfFunda$YEAR, dfFunda$CUSIP),]
+#dfCRSP <- merge(dfCRSP, dfFunda, by = c('YEAR', 'CUSIP'))
+#dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% fill(FVD)
+#dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(FVD=zoo::na.locf(FVD))
+```
+#merge step to create the intersecting dataframe of CRSP and FUNDA  
+```{r}
+#dfCRSP<- merge(dfCRSP, dfFunda, by = c('CUSIP','YEAR'), all.x = T)
+#rm(dfFunda)
+
+dfCRSP <- inner_join(dfCRSP, dfFunda, by = c('CUSIP','YEAR'))
+#write_sas(dfCRSP,"Q:/Users/hmaheshwari6/chelsea.sas7bdat")
+rm(dfFunda)
+
+```
+
+#Merging the dataset with interest rate data.
+```{r}
+#setwd("P:/MFI/assignment5/5.3")
+#dfCRSP <- setDT(read_sas("Q:/Users/hmaheshwari6/chelsea.sas7bdat"))
+
+rate <- read.csv("DAILYFED.csv")
+rate$DATE <- as.Date(rate$DATE, "%Y-%m-%d")
+rate <- data.table(rate)
+rate$DTB3Cont <- log(1 +as.numeric(as.character(rate$DTB3)) * 0.01)
+rate <- na.locf(na.locf(rate), fromLast= TRUE)
+rate <- rate[,c('DATE', 'DTB3Cont')]
+dfCRSP <-  inner_join(dfCRSP, rate , by = c('DATE')) #merge(dfCRSP, rate, by = c('DATE'))
+rm(rate)
+dfCRSP <- dfCRSP[,c('DATE', 'YEAR','CUSIP','SIGMAE','ANNRET','MARKETCAP','FVD', 'DTB3Cont')]
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+```
+
+# Creating time series of the value of the assets for every CUSIP every Year
+# using the value of assets and taking standard deviation to converge
+```{r}
+rootKMV <- function(x, parms) c(F1 = x*pnorm((log(x/parms[1])+ parms[2] + parms[3]^2/2)/parms[3])- exp(-parms[2])*parms[1]*pnorm((log(x/parms[1])+ parms[2] - parms[3]^2/2)/parms[3]) - parms[4])
+
+findingSol = function(data){
+  rootFrame <- data.frame()
+  rootFrame <- data
+  rootFrame$ValueF<- rep(-1,length=nrow(rootFrame))
+  rootFrame$sigmav <- rootFrame$SIGMAE
+  sigmaVF <- unique(rootFrame$sigmav)
+  for (i in (1:nrow(rootFrame)) ){
+    params = c(as.numeric(rootFrame$FVD[i]), as.numeric(rootFrame$DTB3Cont[i]), as.numeric(sigmaVF) ,   as.numeric(rootFrame$MARKETCAP[i]))
+    
+    rootFrame$ValueF[i] <- uniroot(rootKMV, parms = params,interval = c(-100000,100000000000), f.lower = -100000, f.upper = 100000000000 )$root
+  }
+  rootFrame[apply(rootFrame, 1, function(x) all(is.finite(x))), ]
+  rootFrame <- rootFrame %>% mutate(vsolag = dplyr::lag(ValueF, n = 1, default = NA))
+  rootFrame <- rootFrame[complete.cases(rootFrame),]
+  rootFrame$valRet = (rootFrame$ValueF - rootFrame$vsolag)/ rootFrame$vsolag
+  sigmaUP <- rootFrame%>% summarise(sigmae = sd(valRet) * sqrt(250))
+  diff = abs(sigmaVF - sigmaUP)
+  
+  counter = 0
+  while ((diff > 0.001) | (counter < 4)){
+  #while(counter < 3){
+    print(nrow(rootFrame))
+    sigmaVF = sigmaUP
+    if(nrow(rootFrame) <= 1){
+       for (i in (1:nrow(rootFrame)) ){
+           params = c(as.numeric(rootFrame$FVD[i]), as.numeric(rootFrame$DTB3Cont[i]), as.numeric(sigmaVF) ,   as.numeric(rootFrame$MARKETCAP[i]))
+          rootFrame$ValueF[i] <- uniroot(rootKMV, parms = params,interval = c(-100000,100000000000), f.lower = -100000, f.upper = 100000000000)$root
+        }
+        rootFrame[apply(rootFrame, 1, function(x) all(is.finite(x))), ]
+        rootFrame <- rootFrame %>% mutate(vsolag = dplyr::lag(ValueF, n = 1, default = NA))
+        rootFrame <- rootFrame[complete.cases(rootFrame),]
+        rootFrame$valRet = (rootFrame$ValueF - rootFrame$vsolag)/ rootFrame$vsolag
+        sigmaUP <- rootFrame%>% summarise(sigmae = sd(valRet) * sqrt(250))
+        diff = abs(sigmaVF - sigmaUP)
+        counter = counter + 1
+      }
+      #print("chelsea")
+    else{
+      return (rootFrame)
+    }
+      #rootFrame[apply(rootFrame, 1, function(x) all(is.finite(x))), ]
+      return (rootFrame)
+  }
+   
+}
+
+dfCRSPF <- dfCRSP%>% group_by(CUSIP, YEAR) %>%  do(data.frame(findingSol(.)))
+#write_sas(dfCRSPF,"Q:/Users/hmaheshwari6/chelseaFinal.sas7bdat")
+#dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+rm(dfCRSP)
+dfCRSP <- dfCRSPF
+rm(dfCRSPF)
+```
+
+#lagging the variables 
+```{r}
+dfCRSP <- setDT(read_sas("Q:/Users/hmaheshwari6/chelseaFinal.sas7bdat"))
+dfCRSP <-  dfCRSP[,c('DATE', 'YEAR','CUSIP','SIGMAE','ANNRET','MARKETCAP','FVD', 'DTB3Cont', 'ValueF', 'sigmav')]
+dfCRSP <- dfCRSP %>% rename(ValueFirm = ValueF)
+dfCRSP <- dfCRSP %>% rename(SIGMAV = sigmav)
+
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(ANNRET = dplyr::lag(ANNRET, n = 1, default = NA))
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(SIGMAE = dplyr::lag(SIGMAE, n = 1, default = NA))
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(FVD = dplyr::lag(FVD, n = 1, default = NA))
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(MARKETCAP = dplyr::lag(MARKETCAP, n = 1, default = NA))
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(ValueFirm = dplyr::lag(ValueFirm, n = 1, default = NA))
+dfCRSP <- dfCRSP %>% group_by(CUSIP) %>% mutate(SIGMAV = dplyr::lag(SIGMAV, n = 1, default = NA))
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+dfCRSP <- dfCRSP[order(dfCRSP$DATE, dfCRSP$CUSIP),]
+
+dfCRSP  <- dfCRSP %>% group_by(YEAR, CUSIP) %>% summarise(rfrate= first(DTB3Cont),
+                                                   FVD = first(FVD),
+                                                   MARKETCAP =first(MARKETCAP),
+                                                   ANNRET = first(ANNRET),
+                                                   SIGMAE = first(SIGMAE),
+                                                   ValueFirm = first(ValueFirm),
+                                                   SIGMAV = first(SIGMAV)
+                                                   )
+```
+
+#calculation of distance to default and probability of default for each firms for each year
+```{r}
+
+pdf("DDPDkmvValues.pdf", width = 20, height = 30)
+plot.new()
+dfCRSP$DDkmv <- (log(dfCRSP$ValueFirm/dfCRSP$FVD) + (dfCRSP$ANNRET - 0.5 * dfCRSP$SIGMAV* dfCRSP$SIGMAV) )/(dfCRSP$SIGMAV)
+dfCRSP$PDkmv<- pnorm(-dfCRSP$DDkmv)
+temp <- dfCRSP[,c('YEAR','CUSIP','DDkmv','PDkmv')]
+years <- unique(temp$YEAR)
+for (i in years){
+   grid.newpage()
+   temp2 <- subset(temp, temp$YEAR == i)
+   grid.table(temp2)
+}
+dev.off()  
+rm(temp)
+
+
+```
+#compute descriptive stats
+```{r}
+
+dfCRSP <- filter(dfCRSP, DDkmv < 1000)
+dfCRSP <- filter(dfCRSP, DDkmv > 0)
+ddpdFinal <- dfCRSP[,c('DDkmv','PDkmv')]
+
+pdf("desc_stats.pdf", width = 20, height = 30)
+  plot.new()
+  string <- "Descriptive Stats"
+  title(string, cex.main=2)
+  tmp <- do.call(data.frame, 
+                 list(count = apply(ddpdFinal, 2, length),
+                      mean = apply(ddpdFinal, 2, mean),
+                      Q_25 = apply(ddpdFinal, 2, quantile, probs = c(0.25)),
+                      Q_50 = apply(ddpdFinal, 2, quantile, probs = c(0.50)),
+                      Q_75 = apply(ddpdFinal, 2, quantile, probs = c(0.75)),
+                      sd = apply(ddpdFinal, 2, sd)
+                 ))
+  grid.table(tmp)
+dev.off()  
+rm(tmp)
+rm(ddpdFinal)
+```
+# correlation between method ddnaive, method direct & method iterative
+
+```{r}
+#naive method
+dfCRSP$sigNaive1= (dfCRSP$MARKETCAP/(dfCRSP$MARKETCAP+dfCRSP$FVD)) * dfCRSP$SIGMAE  + (dfCRSP$FVD/(dfCRSP$MARKETCAP+dfCRSP$FVD)) * (dfCRSP$SIGMAE * 0.25 + 0.05)
+dfCRSP$DDNaive = (log((dfCRSP$MARKETCAP+dfCRSP$FVD)/dfCRSP$FVD) + (dfCRSP$ANNRET - 0.5 * dfCRSP$sigNaive1* dfCRSP$sigNaive1) )/(dfCRSP$sigNaive1)
+
+
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+dfCRSP$PDNaive<- pnorm(-dfCRSP$DDNaive)
+
+#direct method
+calModel <- function(x) {
+F1 = E - x[1]*pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2] ) + F*exp(-r)*pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2]-x[2])
+F2 = sigmaE - x[1]/E * pnorm( (log(x[1]/F)+(r+x[2]^2/2))/x[2])* x[2]
+c(F1 = F1, F2 = F2)
+}
+
+rootFrame <- select(dfCRSP,YEAR,CUSIP)
+rootFrame$ValueF<- rep(-1,length=nrow(rootFrame))
+rootFrame$sigmaVal<- rep(-1,length=nrow(rootFrame))
+
+
+for (i in (1:nrow(dfCRSP)) ){
+    E = dfCRSP$MARKETCAP[i]
+    F = dfCRSP$FVD[i]
+    r = dfCRSP$rfrate[i]
+    sigmaE = dfCRSP$SIGMAE[i]
+    solution <- multiroot(f = calModel, start = c(dfCRSP$MARKETCAP[i]+dfCRSP$FVD[i],dfCRSP$MARKETCAP[i]*dfCRSP$sigNaive1[i]/(dfCRSP$MARKETCAP[i]+dfCRSP$FVD[i])))
+    rootFrame$ValueF[i] = solution$root[1]
+    rootFrame$sigmaVal[i] = solution$root[2]
+}
+
+dfCRSP$DDDirect <- ( log(rootFrame$ValueF/dfCRSP$FVD) + (dfCRSP$ANNRET-rootFrame$sigmaVal**2/2)) / (rootFrame$sigmaVal)
+dfCRSP$PDDirect <- pnorm(-dfCRSP$DDDirect)
+
+rm(rootFrame)
+dfCRSP <- dfCRSP[complete.cases(dfCRSP),]
+ddpdFinal <- dfCRSP[,c('DDkmv','DDDirect', 'DDNaive')]
+
+pdf("CorrelationDD.pdf", width = 20, height = 30)
+  plot.new()
+  string <- "Correlation Distance to Default"
+  title(string, cex.main=2)
+  tmp <- cor(ddpdFinal)
+  grid.table(tmp)
+dev.off()
+
+ddpdFinal <- dfCRSP[,c('PDkmv','PDDirect', 'PDNaive')]
+
+pdf("CorrelationPD.pdf", width = 20, height = 30)
+  plot.new()
+  string <- "Correlation Probability of Default"
+  title(string, cex.main=2)
+  tmp <- cor(ddpdFinal)
+  grid.table(tmp)
+dev.off()  
+rm(tmp)
+rm(ddpdFinal)
+```
+#Plot Mean, 25th 50th 75th Percentile of DD for iterative method, Direct Method, Naive Method
+```{r}
+
+pdf("plotsmean.pdf", width = 20, height = 30)
+fmean <- function(df, columnVar, headerLeft) {
+  df[ c( columnVar ,  "YEAR" )  ]  %>% group_by(YEAR) %>% summarise_(valueCol = paste( "mean(" ,  as.name(columnVar), ")"  ) ) %>%  ggplot(aes(x = YEAR, y = valueCol)) + geom_line() + labs(y = headerLeft) + ggtitle("Mean Plot")
+}
+namVar <- c('mean_DD_KMV_IterativeMethod', 'mean_DD_DirectMethod', 'mean_DD_NaiveMethod')
+            
+items <- c("DDkmv","DDDirect", "DDNaive")
+K <- 1
+for(i in 1:length(items)){
+    plot(fmean(dfCRSP, items[[i]], namVar[[K]]))
+    K <- K + 1
+}
+dev.off()
+
+```
+#Plot Quantiles of DD for iterative method, Direct Method, Naive Method
+```{r}
+
+pdf("quantiles.pdf", width = 20, height = 30)
+fQuant <- function(df, probQuant, columnVar, headerLeft) {
+  df[ c( columnVar ,  "YEAR" )  ]  %>% group_by(YEAR) %>% summarise_(valueCol = paste( "quantile(" ,  as.name(columnVar), ",probs=",probQuant ,")"  ) ) %>%  ggplot(aes(x = YEAR, y = valueCol)) + geom_line() + labs(y = headerLeft) + ggtitle("Quantile Plot")
+}
+setorder(dfCRSP, 'YEAR')
+
+namVar <- c('Q_25_DD_KMV_IterativeMethod', 'Q_50_DD_KMV_IterativeMethod', 'Q_75_DD_KMV_IterativeMethod',
+            'Q_25_DD_DirectMethod', 'Q_50_DD_DirectMethod', 'Q_75_DD_DirectMethod',
+            'Q_25_DD_NaiveMethod', 'Q_50_DD_NaiveMethod', 'Q_75_DD_NaiveMethod'
+            )
+
+items <- c("DDkmv","DDDirect", "DDNaive")
+quant <- c(0.25, 0.5, 0.75)
+K <- 1
+for(i in 1:length(items)){
+  for(j in 1:length(quant)){
+    plot(fQuant(dfCRSP, quant[[j]], items[[i]], namVar[[K]]))
+    K <- K + 1
+  }
+}
+
+dev.off()
+```
