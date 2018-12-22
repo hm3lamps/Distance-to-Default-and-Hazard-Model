@@ -2,7 +2,8 @@
 Distance to default, Probability to Default and Hazard Models and Risk Management for Financial Data
 
 => Calculations of distance to default and probability of default on COMPUSTAT and CRSP Dataset.
-Methods Used: Naive Approach, Black Scholes Approach, and Iterative Methods (Moody's KMV Method)
+
+=> Methods Used: Naive Approach, Black Scholes Approach, and Iterative Methods (Moody's KMV Method)
 
 => Using Hazard Models and Machine Learning techniques to predict the Credit Risk of the consumers.
 
